@@ -37,7 +37,7 @@ public class azureAdFilter implements Filter {
     public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
         HttpServletRequest request = (HttpServletRequest)servletRequest;
         // TODO: if this is the redirect URL, extract token, validate, and collect group membership from graph API.
-        // If successful, set logged in status in session and continue.
+        // Then - If successful, set logged in status in session and continue.
 
         // if not logged in, redirect to oauth2 provider
         if ((request.getSession().getAttribute(sessionVariableName) == null)
@@ -46,6 +46,7 @@ public class azureAdFilter implements Filter {
             responseTypes.add("code");
             Collection<String> scopes = new ArrayList<>();
             scopes.addAll(Arrays.asList(new String[]{"openid","profile","https://graph.microsoft.com/Directory.AccessAsUser.All"}));
+            // TODO: setState() a random value, stash in session and compare on entry
             String url =
                     new AuthorizationCodeRequestUrl(this.oauth2Url, clientId).setResponseTypes(responseTypes)
                             .setScopes(scopes)
