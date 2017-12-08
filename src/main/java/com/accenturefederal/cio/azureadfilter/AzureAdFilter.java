@@ -54,7 +54,7 @@ public class AzureAdFilter implements Filter {
         }
         String fullUrl = request.getRequestURL().toString()+(request.getQueryString()==null?"":'?'+request.getQueryString());
         if(fullUrl.equals(this.redirectUrl)) {
-                    request.getRequestDispatcher(loginUrl).forward(request, servletResponse);
+            ((HttpServletResponse)servletResponse).sendRedirect(loginUrl);
         } else {
             filterChain.doFilter(request,servletResponse);
         }
