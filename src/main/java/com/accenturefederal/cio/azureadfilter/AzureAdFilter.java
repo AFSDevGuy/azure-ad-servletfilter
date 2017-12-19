@@ -5,6 +5,8 @@ import com.accenturefederal.cio.adal4j.HttpClientHelper;
 import com.microsoft.aad.adal4j.AuthenticationResult;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.servlet.*;
 import javax.servlet.http.HttpServletRequest;
@@ -21,15 +23,29 @@ public class AzureAdFilter implements Filter {
     public static final String REDIRECT_URL = "redirect_uri";
     public static final String LOGIN_URL = "login_uri";
     public static final String GROUPS = "groups";
+    public static final String ALLOWED_DOMAINS = "allowed_domains";
 
     protected String redirectUrl = null;
     protected String loginUrl = "/";
+    protected String[] allowedDomains = new String[0];
+    protected String context = "/";
+
+    private final Logger log = LoggerFactory.getLogger(AzureAdFilter.class);
 
     public void init(FilterConfig filterConfig) throws ServletException {
         this.redirectUrl = filterConfig.getServletContext().getInitParameter(REDIRECT_URL);
-        if((filterConfig.getInitParameter(LOGIN_URL)!=null)&&(!filterConfig.getInitParameter(LOGIN_URL).isEmpty())){
-            this.loginUrl = filterConfig.getInitParameter(LOGIN_URL);
+        if((filterConfig.getServletContext().getInitParameter(LOGIN_URL)!=null)&&(!filterConfig.getServletContext().getInitParameter(LOGIN_URL).isEmpty())){
+            this.loginUrl = filterConfig.getServletContext().getInitParameter(LOGIN_URL);
         }
+        if ((filterConfig.getServletContext().getInitParameter(ALLOWED_DOMAINS)!=null)&&(!filterConfig.getServletContext().getInitParameter(ALLOWED_DOMAINS).isEmpty())) {
+            this.allowedDomains = filterConfig.getServletContext().getInitParameter(ALLOWED_DOMAINS).split(",");
+            for(int index=0; index<allowedDomains.length; index++) {
+                allowedDomains[index] = allowedDomains[index].trim();
+            }
+        }
+        context = filterConfig.getServletContext().getContextPath();
+        log.info("init: redirect_uri={} login_uri={} allowed_domains={} context={}",redirectUrl,loginUrl,allowedDomains, context);
+
     }
 
     public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain)
@@ -38,26 +54,47 @@ public class AzureAdFilter implements Filter {
         // validate that we are logged in
         if (!AuthHelper.isAuthenticated(request)) {
             error(servletResponse,404,"Unauthorized", "Request not authenticated");
+            return;
         }
         // Attach username to request
         request = attachUsername(request);
+        if (!isAllowedDomain(request.getHeader("X-Username"))) {
+            error(servletResponse,404,"Unauthorized", "Unauthorized domain access");
+            return;
+        }
         // Attach group memberships to request
         try {
             if(request.getSession().getAttribute(GROUPS)==null) {
+                log.info("must find groups for user {}", AuthHelper.getAuthSessionObject(request).getUserInfo().getDisplayableId());
                 AuthenticationResult authResult = AuthHelper.getAuthSessionObject(request);
                 Collection<String> groups = getGroupsFromGraph(authResult.getAccessToken());
+                log.info("groups found for user {}: {}", AuthHelper.getAuthSessionObject(request).getUserInfo().getDisplayableId(), groups);
                 request.getSession().setAttribute(GROUPS,groups);
             }
             request = attachGroups(request,(Collection<String>)(request.getSession().getAttribute(GROUPS)));
         } catch (Exception e) {
             error(servletResponse,401, "Unauthorized", "Can't read group membership: "+e.getLocalizedMessage());
+            return;
         }
         String fullUrl = request.getRequestURL().toString()+(request.getQueryString()==null?"":'?'+request.getQueryString());
         if(fullUrl.equals(this.redirectUrl)) {
+            log.info("redirecting {} to {}", fullUrl, loginUrl);
             ((HttpServletResponse)servletResponse).sendRedirect(loginUrl);
         } else {
             filterChain.doFilter(request,servletResponse);
         }
+    }
+
+    private boolean isAllowedDomain(String username) {
+        if ((allowedDomains==null)||(allowedDomains.length==0)){
+            return true;
+        }
+        for (String allowedDomain : allowedDomains) {
+            if(username.toLowerCase().endsWith("@"+allowedDomain.toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private HttpServletRequest attachGroups(HttpServletRequest request, Collection<String> groups) throws Exception {
@@ -66,17 +103,17 @@ public class AzureAdFilter implements Filter {
     }
 
     private Collection<String> getGroupsFromGraph(String accessToken) throws Exception {
-        URL url = new URL("https://graph.windows.net/me/getMemberGroups?api-version=1.6");
+        URL url = new URL("https://graph.windows.net/me/memberOf?api-version=1.6");
 
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         // Set the appropriate header fields in the request header.
         conn.setRequestProperty("Authorization", accessToken);
         conn.setRequestProperty("Accept", "application/json;");
         conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestMethod("POST");
-        conn.setDoOutput(true);
-        conn.getOutputStream().write("{\"securityEnabledOnly\":\"true\"}".getBytes());
-        conn.getOutputStream().close();
+        conn.setRequestMethod("GET");
+        //conn.setDoOutput(true);
+        //conn.getOutputStream().write("{\"securityEnabledOnly\":\"true\"}".getBytes());
+        //conn.getOutputStream().close();
         int responseCode = conn.getResponseCode();
         if (responseCode != 200) {
             String failureMsg = HttpClientHelper.getResponseStringFromConn(conn, false);
@@ -88,8 +125,7 @@ public class AzureAdFilter implements Filter {
         JSONArray groups = response.getJSONObject("responseMsg").getJSONArray("value");
         Collection<String> groupNames = new ArrayList<>();
         for (int index=0; index<groups.length();index++) {
-            String groupId = groups.getString(index);
-            String groupName = getGroupNameFromGraph(accessToken, groupId);
+            String groupName = ((JSONObject)groups.get(index)).getString("displayName");
             groupNames.add(groupName);
         }
         return groupNames;
@@ -145,6 +181,7 @@ public class AzureAdFilter implements Filter {
 
     protected void error(ServletResponse servletResponse, int statusCode, String message, String logMessage)
             throws IOException {
+        log.error("status code: {} message: {} logMessage: {}",statusCode, message, logMessage);
         if ((message==null)||(message.isEmpty())) {
             ((HttpServletResponse)servletResponse).sendError(statusCode);
         } else {

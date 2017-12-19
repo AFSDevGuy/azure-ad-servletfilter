@@ -25,6 +25,7 @@ package com.accenturefederal.cio.adal4j;
 
 
         import java.io.IOException;
+        import java.io.Serializable;
         import java.io.UnsupportedEncodingException;
         import java.net.URI;
         import java.net.URLEncoder;
@@ -67,6 +68,7 @@ public class BasicFilter implements Filter {
     private String tenant;
     private String authority;
     private String redirectUri;
+    private String errorPage;
 
     public void destroy() {
 
@@ -74,7 +76,7 @@ public class BasicFilter implements Filter {
 
     public void doFilter(ServletRequest request, ServletResponse response,
                          FilterChain chain) throws IOException, ServletException {
-        if (request instanceof HttpServletRequest) {
+        if ((request instanceof HttpServletRequest)&&(!((HttpServletRequest) request).getRequestURI().equals(errorPage))) {
             HttpServletRequest httpRequest = (HttpServletRequest) request;
             HttpServletResponse httpResponse = (HttpServletResponse) response;
             try {
@@ -102,9 +104,12 @@ public class BasicFilter implements Filter {
                 sendAuthRedirect(httpRequest, httpResponse);
                 return;
             } catch (Throwable exc) {
+                System.err.println("ADAL Authentication Filter error: "+exc.toString()+" "+exc.getMessage());
+                exc.printStackTrace(System.err);
                 httpResponse.setStatus(500);
                 request.setAttribute("error", exc.getMessage());
-                request.getRequestDispatcher("/error.jsp").forward(request, response);
+                request.getRequestDispatcher(errorPage).forward(request, response);
+                return;
             }
         }
         chain.doFilter(request, response);
@@ -319,9 +324,10 @@ public class BasicFilter implements Filter {
         tenant = config.getServletContext().getInitParameter("tenant");
         clientSecret = config.getServletContext().getInitParameter("secret_key");
         redirectUri = config.getServletContext().getInitParameter("redirect_uri");
+        errorPage = config.getServletContext().getInitParameter("error_page");
     }
 
-    private class StateData {
+    private class StateData implements Serializable {
         private String nonce;
         private Date expirationDate;
 
