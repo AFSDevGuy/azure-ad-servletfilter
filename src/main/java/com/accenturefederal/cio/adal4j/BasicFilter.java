@@ -56,6 +56,8 @@ package com.accenturefederal.cio.adal4j;
         import com.nimbusds.openid.connect.sdk.AuthenticationResponseParser;
         import com.nimbusds.openid.connect.sdk.AuthenticationSuccessResponse;
         import org.apache.commons.lang3.StringUtils;
+        import org.slf4j.Logger;
+        import org.slf4j.LoggerFactory;
 
 public class BasicFilter implements Filter {
 
@@ -70,6 +72,9 @@ public class BasicFilter implements Filter {
     private String redirectUri;
     private String errorPage;
 
+    private final Logger log = LoggerFactory.getLogger(BasicFilter.class);
+
+
     public void destroy() {
 
     }
@@ -79,6 +84,7 @@ public class BasicFilter implements Filter {
         if ((request instanceof HttpServletRequest)&&(!((HttpServletRequest) request).getRequestURI().equals(errorPage))) {
             HttpServletRequest httpRequest = (HttpServletRequest) request;
             HttpServletResponse httpResponse = (HttpServletResponse) response;
+            removeHttpOnly(httpResponse);
             try {
                 String currentUri = httpRequest.getRequestURL().toString();
                 String queryStr = httpRequest.getQueryString();
@@ -106,14 +112,32 @@ public class BasicFilter implements Filter {
             } catch (Throwable exc) {
                 System.err.println("ADAL Authentication Filter error: "+exc.toString()+" "+exc.getMessage());
                 exc.printStackTrace(System.err);
-                httpResponse.setStatus(500);
-                request.setAttribute("error", exc.getMessage());
-                request.getRequestDispatcher(errorPage).forward(request, response);
+                error(response,500,"Error during login", "Authentication Exception: "+exc.getMessage());
                 return;
             }
         }
         chain.doFilter(request, response);
     }
+    
+    protected void removeHttpOnly(HttpServletResponse response) {
+        Collection<String> headerNames = response.getHeaderNames();
+        if (response.getHeader("Set-Cookie")!=null) {
+            log.error("Set-Cookie found: ["+response.getHeader("Set-Cookie")+"]");
+            response.setHeader("Set-Cookie",response.getHeader("Set-Cookie").replace("HttpOnly",""));
+            log.error("Set-Cookie modified: ["+response.getHeader("Set-Cookie")+"]");
+        }
+    }
+
+    protected void error(ServletResponse servletResponse, int statusCode, String message, String logMessage) throws IOException {
+        this.log.error("status code: {} message: {} logMessage: {}", new Object[]{statusCode, message, logMessage});
+        if (message != null && !message.isEmpty()) {
+            ((HttpServletResponse)servletResponse).sendError(statusCode, message);
+        } else {
+            ((HttpServletResponse)servletResponse).sendError(statusCode);
+        }
+
+    }
+
 
     private boolean isAuthDataExpired(HttpServletRequest httpRequest) {
         AuthenticationResult authData = AuthHelper.getAuthSessionObject(httpRequest);
@@ -310,7 +334,7 @@ public class BasicFilter implements Filter {
                 "response_mode=form_post&" +
                 "redirect_uri=" + URLEncoder.encode(redirectUri, "UTF-8") +
                 "&client_id=" + clientId +
-                "&resource=https%3a%2f%2fgraph.windows.net" +
+                "&resource=" + URLEncoder.encode(clientId,"UTF-8") +
                 (StringUtils.isEmpty(claims) ? "" : "&claims=" + claims)  +
                 "&state=" + state
                 + "&nonce=" + nonce;
