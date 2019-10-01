@@ -24,40 +24,48 @@ package com.accenturefederal.cio.adal4j;
 // THE SOFTWARE.
 
 
-        import java.io.IOException;
-        import java.io.Serializable;
-        import java.io.UnsupportedEncodingException;
-        import java.net.URI;
-        import java.net.URLEncoder;
-        import java.text.ParseException;
-        import java.util.*;
-        import java.util.concurrent.*;
+import com.microsoft.aad.adal4j.AuthenticationContext;
+import com.microsoft.aad.adal4j.AuthenticationException;
+import com.microsoft.aad.adal4j.AuthenticationResult;
+import com.microsoft.aad.adal4j.ClientCredential;
+import com.nimbusds.jwt.JWTParser;
+import com.nimbusds.oauth2.sdk.AuthorizationCode;
+import com.nimbusds.openid.connect.sdk.AuthenticationErrorResponse;
+import com.nimbusds.openid.connect.sdk.AuthenticationResponse;
+import com.nimbusds.openid.connect.sdk.AuthenticationResponseParser;
+import com.nimbusds.openid.connect.sdk.AuthenticationSuccessResponse;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-        import javax.naming.ServiceUnavailableException;
-        import javax.servlet.Filter;
-        import javax.servlet.FilterChain;
-        import javax.servlet.FilterConfig;
-        import javax.servlet.ServletException;
-        import javax.servlet.ServletRequest;
-        import javax.servlet.ServletResponse;
-        import javax.servlet.http.HttpServletRequest;
-        import javax.servlet.http.HttpServletResponse;
-        import javax.servlet.http.HttpSession;
-
-        import com.accenturefederal.cio.adal4j.AuthHelper;
-        import com.microsoft.aad.adal4j.AuthenticationContext;
-        import com.microsoft.aad.adal4j.AuthenticationException;
-        import com.microsoft.aad.adal4j.AuthenticationResult;
-        import com.microsoft.aad.adal4j.ClientCredential;
-        import com.nimbusds.jwt.JWTParser;
-        import com.nimbusds.oauth2.sdk.AuthorizationCode;
-        import com.nimbusds.openid.connect.sdk.AuthenticationErrorResponse;
-        import com.nimbusds.openid.connect.sdk.AuthenticationResponse;
-        import com.nimbusds.openid.connect.sdk.AuthenticationResponseParser;
-        import com.nimbusds.openid.connect.sdk.AuthenticationSuccessResponse;
-        import org.apache.commons.lang3.StringUtils;
-        import org.slf4j.Logger;
-        import org.slf4j.LoggerFactory;
+import javax.naming.ServiceUnavailableException;
+import javax.servlet.Filter;
+import javax.servlet.FilterChain;
+import javax.servlet.FilterConfig;
+import javax.servlet.ServletException;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+import java.io.IOException;
+import java.io.Serializable;
+import java.io.UnsupportedEncodingException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.text.ParseException;
+import java.util.Base64;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 public class BasicFilter implements Filter {
 
@@ -85,18 +93,18 @@ public class BasicFilter implements Filter {
             HttpServletRequest httpRequest = (HttpServletRequest) request;
             HttpServletResponse httpResponse = (HttpServletResponse) response;
             removeHttpOnly(httpResponse);
+            String currentUri = httpRequest.getRequestURL().toString();
+            String queryStr = httpRequest.getQueryString();
+            String fullUrl = currentUri + (queryStr != null ? "?" + queryStr : "");
             try {
-                String currentUri = httpRequest.getRequestURL().toString();
-                String queryStr = httpRequest.getQueryString();
-                String fullUrl = currentUri + (queryStr != null ? "?" + queryStr : "");
-
                 // check if user has a AuthData in the session
+                // TODO: Check for JWT token and validate if present
                 if (!AuthHelper.isAuthenticated(httpRequest)) {
                     if (AuthHelper.containsAuthenticationData(httpRequest)) {
                         processAuthenticationData(httpRequest, currentUri, fullUrl);
                     } else {
                         // not authenticated
-                        sendAuthRedirect(httpRequest, httpResponse);
+                        sendAuthRedirect(httpRequest, httpResponse, fullUrl);
                         return;
                     }
                 }
@@ -107,7 +115,7 @@ public class BasicFilter implements Filter {
                 // something went wrong (like expiration or revocation of token)
                 // we should invalidate AuthData stored in session and redirect to Authorization server
                 removePrincipalFromSession(httpRequest);
-                sendAuthRedirect(httpRequest, httpResponse);
+                sendAuthRedirect(httpRequest, httpResponse,fullUrl);
                 return;
             } catch (Throwable exc) {
                 System.err.println("ADAL Authentication Filter error: "+exc.toString()+" "+exc.getMessage());
@@ -118,7 +126,7 @@ public class BasicFilter implements Filter {
         }
         chain.doFilter(request, response);
     }
-    
+
     protected void removeHttpOnly(HttpServletResponse response) {
         Collection<String> headerNames = response.getHeaderNames();
         if (response.getHeader("Set-Cookie")!=null) {
@@ -189,7 +197,8 @@ public class BasicFilter implements Filter {
         return (String) JWTParser.parse(idToken).getJWTClaimsSet().getClaim(claimKey);
     }
 
-    private void sendAuthRedirect(HttpServletRequest httpRequest, HttpServletResponse httpResponse) throws IOException {
+    private void sendAuthRedirect(HttpServletRequest httpRequest, HttpServletResponse httpResponse,
+                                  String targetUrl) throws IOException {
         httpResponse.setStatus(302);
 
         // use state parameter to validate response from Authorization server
@@ -199,7 +208,7 @@ public class BasicFilter implements Filter {
         String nonce = UUID.randomUUID().toString();
 
         storeStateInSession(httpRequest.getSession(), state, nonce);
-
+        state = state + ":" + Base64.getEncoder().encodeToString(targetUrl.getBytes());
         String currentUri = httpRequest.getRequestURL().toString();
 
         httpResponse.sendRedirect(getRedirectUrl(currentUri, httpRequest.getParameter("claims"), state, nonce));
@@ -234,6 +243,11 @@ public class BasicFilter implements Filter {
         Map<String, StateData> states = (Map<String, StateData>) session.getAttribute(STATES);
         if (states != null) {
             eliminateExpiredStates(states);
+            // Check for presence of additional payload in 'state'
+            int splitPos = state.indexOf(':');
+            if (splitPos >= 0) {
+                state = state.substring(0,splitPos);
+            }
             StateData stateData = states.get(state);
             if (stateData != null) {
                 states.remove(state);

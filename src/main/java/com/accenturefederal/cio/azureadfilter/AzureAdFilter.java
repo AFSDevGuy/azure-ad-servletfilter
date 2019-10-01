@@ -17,7 +17,10 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -99,8 +102,19 @@ public class AzureAdFilter implements Filter {
         //((HttpServletResponse)servletResponse).setHeader("Access-Control-Allow-Methods", "POST, GET");
         //((HttpServletResponse)servletResponse).setHeader("Access-Control-Max-Age", "3600");
         if(fullUrl.equals(this.redirectUrl)) {
-            log.info("redirecting {} to {}", fullUrl, loginUrl);
-            ((HttpServletResponse)servletResponse).sendRedirect(loginUrl);
+            // check 'state' parameter for presence of a URL to use instead of the standard loginUrl
+            String targetUrl = loginUrl;
+            Map<String, String> params = new HashMap();
+            for (String key : request.getParameterMap().keySet()) {
+                params.put(key, request.getParameterMap().get(key)[0]);
+            }
+            String stateData = params.get("state");
+            int splitPos = stateData.indexOf(':');
+            if ((splitPos > 0)&&(splitPos<stateData.length())) {
+                targetUrl = new String(Base64.getDecoder().decode(stateData.substring(splitPos+1)));
+            }
+            log.info("redirecting {} to {}", fullUrl, targetUrl);
+            ((HttpServletResponse)servletResponse).sendRedirect(targetUrl);
         } else {
             filterChain.doFilter(request,servletResponse);
         }
